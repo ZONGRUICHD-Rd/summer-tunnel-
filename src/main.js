@@ -16,9 +16,9 @@ const params = new URLSearchParams(location.search);
 const coarse = matchMedia('(pointer: coarse)').matches;
 const small = Math.min(screen.width, screen.height) < 700;
 const QUALITY = {
-  low: { shadowMap: 2048, terrain: 160, trees: 1300, farTrees: 1100, treeDetail: 1, pixelRatio: 1.25 },
-  medium: { shadowMap: 2048, terrain: 200, trees: 2000, farTrees: 1800, treeDetail: 1, pixelRatio: 1.5 },
-  high: { shadowMap: 4096, terrain: 240, trees: 2800, farTrees: 2400, treeDetail: 2, pixelRatio: 2 },
+  low: { shadowMap: 2048, terrain: 160, trees: 1300, farTrees: 1100, treeDetail: 1, paint: 2, leaves: 6000, pixelRatio: 1.25 },
+  medium: { shadowMap: 2048, terrain: 200, trees: 2000, farTrees: 1800, treeDetail: 1, paint: 2, leaves: 9000, pixelRatio: 1.5 },
+  high: { shadowMap: 4096, terrain: 240, trees: 2800, farTrees: 2400, treeDetail: 2, paint: 3, leaves: 14000, pixelRatio: 2 },
 };
 const quality = QUALITY[params.get('q')] ?? (coarse || small ? QUALITY.medium : QUALITY.high);
 
@@ -76,17 +76,45 @@ function resize() {
   pipeline.setSize(pw, ph);
   for (const s of Object.values(scenes)) for (const wset of s.wires ?? []) wset.setResolution(pw, ph);
   camera.aspect = w / h;
-  if (current) base = current.frame(camera.aspect);
-  camera.updateProjectionMatrix();
+  if (current) {
+    base = current.frame(camera.aspect);
+    if (!freeMode && !returning) applyBaseView();
+    else applyProjection(1);
+  }
 }
 window.addEventListener('resize', resize);
 
 // ------------------------------------------------------------ scene logic
+// Scenes may describe their framing as a real lens: focal length F and
+// principal point (px, py) in reference-image pixels, plus the window of that
+// image to show. This reproduces shifted (architectural) projections where
+// verticals stay vertical and the horizon sits low in the frame.
+function applyProjection(zoom = look.zoom) {
+  camera.near = base.near ?? 0.25;
+  if (base.lens && !freeMode) {
+    const { F, px, py } = base.lens;
+    const w = base.window;
+    const f = F * zoom;
+    const n = camera.near;
+    camera.projectionMatrix.makePerspective(
+      (n * (w.x0 - px)) / f,
+      (n * (w.x1 - px)) / f,
+      (n * (py - w.y0)) / f,
+      (n * (py - w.y1)) / f,
+      n,
+      camera.far
+    );
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  } else {
+    camera.fov = (freeMode ? 60 : base.fov) / zoom;
+    camera.updateProjectionMatrix();
+  }
+}
+
 function applyBaseView() {
   camera.position.copy(base.position);
   camera.rotation.set(base.pitch + look.pitch, base.yaw + look.yaw, 0, 'YXZ');
-  camera.fov = base.fov / look.zoom;
-  camera.updateProjectionMatrix();
+  applyProjection();
 }
 
 function updateUI(id) {
@@ -133,6 +161,7 @@ function setFree(on, { instant = false } = {}) {
     orbit.minDistance = current.orbit.min;
     orbit.maxDistance = current.orbit.max;
     orbit.maxPolarAngle = Math.PI * 0.53;
+    applyProjection(1);
     orbit.update();
     returning = null;
   } else if (!instant) {
@@ -210,8 +239,11 @@ function tick() {
     target.rotation.set(base.pitch, base.yaw, 0, 'YXZ');
     camera.position.lerpVectors(returning.pos, target.position, k);
     camera.quaternion.slerpQuaternions(returning.quat, target.quaternion, k);
-    camera.fov = THREE.MathUtils.lerp(returning.fov, base.fov, k);
-    camera.updateProjectionMatrix();
+    if (base.lens) applyProjection(1);
+    else {
+      camera.fov = THREE.MathUtils.lerp(returning.fov, base.fov, k);
+      camera.updateProjectionMatrix();
+    }
     if (returning.t >= 1) returning = null;
   } else {
     look.update(dt);

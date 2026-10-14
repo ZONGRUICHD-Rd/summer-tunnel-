@@ -32,6 +32,9 @@ export function toon(opts = {}) {
     wind = 0,
     fog = true,
     lineWeight = 1,
+    sunScale = 1,
+    shadeBelow = -1e4, // painted shade: no direct sun below this world height
+    dapple = null, // painted dappled light: { xMin, xMax, scale, amount }
   } = opts;
 
   const mat = new THREE.MeshToonMaterial({
@@ -54,6 +57,9 @@ export function toon(opts = {}) {
     uFoliageScale: { value: foliageScale },
     uWind: { value: wind },
     uLineWeight: { value: lineWeight },
+    uSunScale: { value: sunScale },
+    uShadeBelow: { value: shadeBelow },
+    uDapple: { value: dapple ? new THREE.Vector4(dapple.xMin, dapple.xMax, dapple.scale ?? 1.2, dapple.amount ?? 0.85) : new THREE.Vector4(1, 0, 1, 0) },
   };
   mat.userData.uniforms = uniforms;
 
@@ -102,7 +108,7 @@ export function toon(opts = {}) {
 
     shader.fragmentShader =
       head +
-      `uniform vec2 uRamp;\nuniform vec2 uFloors;\nuniform float uFoliage;\nuniform float uFoliageScale;\nuniform float uLineWeight;\nvarying vec3 vWPos;\n` +
+      `uniform vec2 uRamp;\nuniform vec2 uFloors;\nuniform float uFoliage;\nuniform float uFoliageScale;\nuniform float uLineWeight;\nuniform float uSunScale;\nuniform float uShadeBelow;\nuniform vec4 uDapple;\nvarying vec3 vWPos;\n` +
       NOISE_GLSL +
       shader.fragmentShader
         .replace(
@@ -112,7 +118,14 @@ export function toon(opts = {}) {
             float x = dot(normal, lightDirection) * 0.5 + 0.5;
             float lit = smoothstep(uRamp.x, uRamp.y, x);
             float tone = mix(uFloors.x * x * 2.0, mix(uFloors.y, 1.0, smoothstep(uRamp.y, 1.0, x)), lit);
-            return vec3(tone);
+            float shade = smoothstep(uShadeBelow - 0.08, uShadeBelow + 0.08, vWPos.y + (vnoise(vWPos.xz * 9.0 + vWPos.y * 3.0) - 0.5) * 0.25);
+            if (uDapple.w > 0.0) {
+              float inX = smoothstep(uDapple.x - 0.15, uDapple.x + 0.15, vWPos.x) * (1.0 - smoothstep(uDapple.y - 0.15, uDapple.y + 0.15, vWPos.x));
+              vec2 dp = vWPos.xz * uDapple.z;
+              float leaves = smoothstep(0.5, 0.56, fbm2(dp + fbm2(dp * 0.5) * 1.5));
+              shade *= 1.0 - inX * uDapple.w * (1.0 - leaves);
+            }
+            return vec3(tone * uSunScale * shade);
           }`
         )
         .replace(

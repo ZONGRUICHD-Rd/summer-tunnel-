@@ -13,6 +13,7 @@ const AT_INFINITY = /* glsl */ `
 `;
 
 const color = (c) => new THREE.Color(c);
+const MAX_PATCHES = 20;
 
 /**
  * Gradient sky dome with an optional procedural cloud deck (altocumulus /
@@ -45,7 +46,61 @@ export function createSkyDome(o) {
     uCirrus: { value: o.cirrus ?? 0 },
     uCirrusColor: { value: color(o.cirrusColor ?? 0xffffff) },
     uCirrusDir: { value: o.cirrusDir ?? new THREE.Vector3(1, 0, -0.3).normalize() },
+    // optional multi-stop gradient: [[elevationDeg, colour], ...] (max 6)
+    uStops: { value: 0 },
+    uStopE: { value: new Array(6).fill(0) },
+    uStopC: { value: Array.from({ length: 6 }, () => new THREE.Color()) },
+    uSide: { value: o.side ?? new THREE.Vector4(1, 0, 0, 0) }, // dir.xz, amount, min elevation
+    uBlotch: { value: o.blotch ?? 0 },
+    uLineWeight: { value: o.lineWeight ?? 1 },
+    // optional colour layout map in reference-pixel space (see tunnel-skymap.js)
+    uMap: { value: null },
+    uMapRect: { value: new THREE.Vector4(0, 1, 0, 1) },
+    uMapAmt: { value: 0 },
+    uMapDetail: { value: o.mapDetail ?? 1 },
+    // painted cloud patches laid out in the pixel space of a reference lens
+    uLens: { value: new THREE.Vector3(o.lens?.F ?? 1, o.lens?.px ?? 0, o.lens?.py ?? 0) },
+    uPatchCount: { value: 0 },
+    uPA: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Vector4()) },
+    uPB: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Vector4()) },
+    uPC: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Vector4()) },
+    uPD: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Vector4()) },
+    uPLit: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Color()) },
+    uPShade: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Color()) },
+    uPWarm: { value: Array.from({ length: MAX_PATCHES }, () => new THREE.Color()) },
   };
+  if (o.map) {
+    const m = o.map;
+    const bytes = Uint8Array.from(atob(m.data), (ch) => ch.charCodeAt(0));
+    const tex = new THREE.DataTexture(bytes, m.width, m.height, THREE.RGBAFormat);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    uniforms.uMap.value = tex;
+    uniforms.uMapRect.value.set(m.x0, m.x1, m.y0, m.y1);
+    uniforms.uMapAmt.value = 1;
+  }
+  if (o.patches) {
+    uniforms.uPatchCount.value = Math.min(MAX_PATCHES, o.patches.length);
+    o.patches.slice(0, MAX_PATCHES).forEach((p, i) => {
+      uniforms.uPA.value[i].set(p.x, p.y, p.rx, p.ry);
+      uniforms.uPB.value[i].set(p.rot ?? 0, p.soft ?? 0.5, p.scale ?? 60, p.stretch ?? 1);
+      uniforms.uPC.value[i].set(p.cover ?? 0.5, p.puff ?? 0.5, p.seed ?? i * 7.13, p.edge ?? 0.06);
+      const ld = new THREE.Vector2(...(p.light ?? [0.55, 0.65])).normalize();
+      uniforms.uPD.value[i].set(p.warmAmount ?? 0.5, p.opacity ?? 1, ld.x, ld.y);
+      uniforms.uPLit.value[i].set(p.lit ?? 0xffffff);
+      uniforms.uPShade.value[i].set(p.shade ?? 0x8090c0);
+      uniforms.uPWarm.value[i].set(p.warm ?? 0xffb0a0);
+    });
+  }
+  if (o.stops) {
+    uniforms.uStops.value = Math.min(6, o.stops.length);
+    o.stops.slice(0, 6).forEach(([e, c], i) => {
+      uniforms.uStopE.value[i] = THREE.MathUtils.degToRad(e);
+      uniforms.uStopC.value[i].set(c);
+    });
+  }
 
   const mat = new THREE.ShaderMaterial({
     uniforms,
@@ -70,6 +125,19 @@ export function createSkyDome(o) {
       uniform vec2 uWind;
       uniform float uCirrus;
       uniform vec3 uCirrusColor, uCirrusDir;
+      uniform int uStops;
+      uniform float uStopE[6];
+      uniform vec3 uStopC[6];
+      uniform vec4 uSide;
+      uniform float uBlotch;
+      uniform float uLineWeight;
+      uniform sampler2D uMap;
+      uniform vec4 uMapRect;
+      uniform float uMapAmt, uMapDetail;
+      uniform vec3 uLens;
+      uniform int uPatchCount;
+      uniform vec4 uPA[${MAX_PATCHES}], uPB[${MAX_PATCHES}], uPC[${MAX_PATCHES}], uPD[${MAX_PATCHES}];
+      uniform vec3 uPLit[${MAX_PATCHES}], uPShade[${MAX_PATCHES}], uPWarm[${MAX_PATCHES}];
       varying vec3 vDir;
       ${NOISE_GLSL}
 
@@ -102,22 +170,134 @@ export function createSkyDome(o) {
         return best;
       }
 
+      float billow(vec2 p) {
+        float s = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+        for (int i = 0; i < 5; i++) {
+          s += a * (1.0 - abs(vnoise(p) * 2.0 - 1.0));
+          p = m * p;
+          a *= 0.5;
+        }
+        return s;
+      }
+      float cloudField(vec2 np, float puff) {
+        vec2 w = vec2(fbm2(np * 0.45), fbm2(np * 0.45 + 5.2)) - 0.5;
+        np += w * 1.6;
+        return mix(fbm2(np), billow(np * 0.8) * 0.95, puff);
+      }
+      // one painted cloud patch, composited over col
+      vec3 paintPatch(vec3 col, vec2 p, int i) {
+        vec4 A = uPA[i];
+        vec4 B = uPB[i];
+        vec4 C = uPC[i];
+        vec4 D = uPD[i];
+        vec2 q = p - A.xy;
+        float cr = cos(B.x);
+        float sr = sin(B.x);
+        q = vec2(cr * q.x + sr * q.y, -sr * q.x + cr * q.y);
+        float r = length(q / A.zw);
+        float edgeN = fbm2(p / (B.z * 2.2) + C.z) - 0.5;
+        float mask = smoothstep(1.0, 1.0 - B.y, r + edgeN * 0.7);
+        if (mask <= 0.001) return col;
+        vec2 np = q / B.z * vec2(1.0, B.w) + C.z * 3.7;
+        vec2 w = vec2(fbm2(np * 0.35), fbm2(np * 0.35 + 5.2)) - 0.5;
+        np += w * 1.3;
+        float cov = mask * clamp(0.85 + 1.1 * (fbm2(np * 0.28 + 2.0) - 0.5), 0.0, 1.3) * C.x;
+        vec3 L = normalize(vec3(D.z, D.w, 0.55));
+        vec3 mid = mix(uPShade[i], uPLit[i], 0.42);
+        if (C.y > 0.5) {
+          // soft body of the cloud mass, shaded by its density gradient
+          float bn = (fbm2(np * 0.62) - 0.5) * 2.1 + 0.5;
+          float bt = 1.0 - cov * 0.78;
+          float bodyA = smoothstep(bt - 0.08, bt + 0.22, bn);
+          float bn2 = (fbm2(np * 0.62 + D.zw * 0.12) - 0.5) * 2.1 + 0.5;
+          float bodyLit = clamp((bn - bn2) * 6.0 + 0.5, 0.0, 1.0);
+          vec3 bodyC = mix(uPShade[i], mid, bodyLit) * (0.94 + 0.12 * fbm2(np * 2.7 + 5.0));
+          float bodyThin = 1.0 - smoothstep(bt, bt + 0.4, bn);
+          bodyC = mix(bodyC, uPWarm[i], bodyThin * 0.5 * D.x);
+          col = mix(col, bodyC, bodyA * 0.92 * D.y);
+          // rounded puffs: three octaves of cloudlets, shaded as small domes,
+          // painted mostly where the light catches them
+          vec4 c1 = cloudlets(np, cov, C.z);
+          vec4 c2 = cloudlets(np * 2.3 + 7.0, cov * 0.8, C.z + 3.0);
+          c2.x /= 2.3;
+          vec4 c3 = cloudlets(np * 5.3 + 3.0, cov * 0.62, C.z + 9.0);
+          c3.x /= 5.3;
+          vec4 cc = c1;
+          if (c2.x > cc.x) cc = c2;
+          if (c3.x > cc.x) cc = c3;
+          float fw = fwidth(cc.x) + 1e-4;
+          float pa = smoothstep(0.0, fw * 1.5 + C.w * 0.5 + 0.02, cc.x);
+          vec3 n = normalize(vec3(cc.y, cc.z, cc.w * 1.15));
+          n.xy += (vec2(vnoise(np * 7.0), vnoise(np * 7.0 + 4.0)) - 0.5) * 0.35;
+          n = normalize(n);
+          float pl = dot(n, L);
+          float lit = smoothstep(0.0, 0.55, pl);
+          vec3 pc = mix(mid, uPLit[i], lit);
+          float thin = 1.0 - smoothstep(0.0, 0.55, cc.w);
+          pc = mix(pc, uPWarm[i], clamp(thin * 0.6 + lit * 0.3, 0.0, 1.0) * D.x);
+          float show = pa * mix(0.35, 1.0, smoothstep(-0.2, 0.35, pl));
+          return mix(col, pc, show * D.y);
+        }
+        // wisps and streaks
+        float nn = (fbm2(np) - 0.5) * 2.2 + 0.5;
+        float th = 1.0 - cov;
+        float a = smoothstep(th - C.w, th + C.w * 2.0, nn);
+        if (a <= 0.001) return col;
+        float n2 = (fbm2(np + D.zw * 0.22) - 0.5) * 2.2 + 0.5;
+        float lit = clamp((nn - n2) * 7.0 + 0.5, 0.0, 1.0);
+        float thin = 1.0 - smoothstep(th, th + 0.35, nn);
+        vec3 cc = mix(uPShade[i], uPLit[i], lit);
+        cc *= 0.93 + 0.14 * fbm2(np * 3.1 + 11.0);
+        float warm = clamp(thin * 0.75 + lit * 0.4 - 0.1, 0.0, 1.0) * D.x;
+        cc = mix(cc, uPWarm[i], warm);
+        cc = mix(col, cc, 0.5 + 0.5 * (1.0 - thin * 0.6));
+        return mix(col, cc, a * D.y);
+      }
+
       void main() {
         vec3 d = normalize(vDir);
         float e = d.y;
 
         // base gradient
-        float tm = smoothstep(0.0, uMidHeight, e);
-        float tz = smoothstep(uMidHeight * 0.6, 1.0, e);
-        vec3 col = mix(uHorizon, uMid, pow(tm, 0.7));
-        col = mix(col, uZenith, tz);
+        vec3 col;
+        if (uStops > 0) {
+          float el = asin(clamp(e, -1.0, 1.0));
+          col = uStopC[0];
+          for (int i = 1; i < 6; i++) {
+            if (i >= uStops) break;
+            float t = smoothstep(uStopE[i - 1], uStopE[i], el);
+            col = mix(col, uStopC[i], t);
+          }
+        } else {
+          float tm = smoothstep(0.0, uMidHeight, e);
+          float tz = smoothstep(uMidHeight * 0.6, 1.0, e);
+          col = mix(uHorizon, uMid, pow(tm, 0.7));
+          col = mix(col, uZenith, tz);
+        }
         col = mix(col, uGround, smoothstep(0.0, -0.06, e));
+        // darker on one side of the sky
+        float side = max(dot(normalize(d.xz + 1e-5), uSide.xy), 0.0);
+        col *= 1.0 - uSide.z * side * smoothstep(uSide.w, uSide.w + 0.4, e);
 
         // painted, watercolour-like variation
         vec2 pp = d.xz / (abs(e) + 0.35);
         float pv = fbm2(pp * 1.7 + 4.0);
         float pv2 = fbm2(pp * 6.0 - 2.0);
         col *= 1.0 + uPaint * ((pv - 0.5) * 1.2 + (pv2 - 0.5) * 0.4);
+        // watercolour blooms: patches with crisp, bleeding edges
+        if (uBlotch > 0.0) {
+          vec2 bp = pp * 2.3 + vec2(fbm2(pp * 1.1), fbm2(pp * 1.1 + 7.0)) * 1.4;
+          float b1 = fbm2(bp);
+          float b2 = fbm2(bp * 2.7 + 3.3);
+          float m1 = smoothstep(0.54, 0.565, b1);
+          float m2 = smoothstep(0.6, 0.62, b2);
+          col *= 1.0 + uBlotch * (m1 * 0.55 - m2 * 0.35 - 0.1);
+          // pale speckles like dropped pigment
+          float sp = smoothstep(0.83, 0.86, vnoise(pp * 38.0));
+          col = mix(col, col * 1.35 + 0.02, sp * uBlotch * 0.6);
+        }
 
         // sun glow
         float sd = max(dot(d, uSunDir), 0.0);
@@ -163,7 +343,38 @@ export function createSkyDome(o) {
             col = mix(col, uCirrusColor, streak * uCirrus);
           }
         }
-        gl_FragColor = vec4(col, 1.0);
+        if (uMapAmt > 0.0 && d.z < -0.05) {
+          vec2 p = vec2(uLens.y + uLens.x * d.x / -d.z, uLens.z - uLens.x * d.y / -d.z);
+          vec2 span = uMapRect.yw - uMapRect.xz;
+          vec2 cell = span / vec2(textureSize(uMap, 0));
+          // warp the lookup with noise so the coarse layout breaks into painted shapes
+          vec2 wp = p / 34.0;
+          vec2 w1 = vec2(fbm2(wp * 0.6 + 1.3), fbm2(wp * 0.6 + 8.1)) - 0.5;
+          vec2 w2 = vec2(vnoise(wp * 2.6 + 4.0), vnoise(wp * 2.6 + 9.0)) - 0.5;
+          vec2 pw = p + (w1 * 2.4 + w2 * 0.9) * cell * uMapDetail;
+          vec2 uv = (pw - uMapRect.xz) / span;
+          vec3 B = texture2D(uMap, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
+          // clouds are the warm / pale cells; sky is saturated blue
+          float cloud = smoothstep(0.1, 0.45, B.r / max(B.b, 0.02));
+          float N = fbm2(wp * 1.3 + w1 * 2.0);
+          float n2 = fbm2(wp * 1.3 + w1 * 2.0 + vec2(0.18, 0.24));
+          float litEdge = clamp((N - n2) * 6.0 + 0.5, 0.0, 1.0);
+          float fine = fbm2(wp * 4.2 + w2 * 3.0);
+          vec3 mapped = B * mix(1.0 + (N - 0.5) * 0.22 + (fine - 0.5) * 0.1,
+                                0.74 + 0.5 * N + 0.3 * (litEdge - 0.5) + (fine - 0.5) * 0.28, cloud * uMapDetail);
+          // inside the frame the layout wins; outside it fades to the gradient
+          vec2 edge = min(uv, 1.0 - uv);
+          float inside = smoothstep(-0.12, 0.04, min(edge.x, edge.y));
+          col = mix(col, mapped, inside * uMapAmt);
+        }
+        if (uPatchCount > 0 && d.z < -0.05) {
+          vec2 p = vec2(uLens.y + uLens.x * d.x / -d.z, uLens.z - uLens.x * d.y / -d.z);
+          for (int i = 0; i < ${MAX_PATCHES}; i++) {
+            if (i >= uPatchCount) break;
+            col = paintPatch(col, p, i);
+          }
+        }
+        gl_FragColor = vec4(col, uLineWeight);
       }
     `,
   });
@@ -180,11 +391,23 @@ export function createSkyDome(o) {
  * and creases appear where they meet, which reads as a painted cumulus.
  */
 export function createCumulus(o) {
-  const az = THREE.MathUtils.degToRad(o.azimuth); // 0 = straight ahead (-Z), + = right
-  const el = THREE.MathUtils.degToRad(o.elevation); // elevation of billboard centre
-  const dir = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
-  const w = Math.tan(THREE.MathUtils.degToRad(o.width / 2));
-  const h = w / (o.aspect ?? 2);
+  let dir;
+  let w;
+  let h;
+  if (o.dir) {
+    // explicit direction and tangent-plane half size
+    dir = o.dir.clone().normalize();
+    w = o.size.x;
+    h = o.size.y;
+    o.aspect = w / h;
+    o.width = THREE.MathUtils.radToDeg(Math.atan(w) * 2);
+  } else {
+    const az = THREE.MathUtils.degToRad(o.azimuth); // 0 = straight ahead (-Z), + = right
+    const el = THREE.MathUtils.degToRad(o.elevation); // elevation of billboard centre
+    dir = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+    w = Math.tan(THREE.MathUtils.degToRad(o.width / 2));
+    h = w / (o.aspect ?? 2);
+  }
 
   const uniforms = {
     uTime: shared.uTime,
@@ -230,7 +453,7 @@ export function createCumulus(o) {
         float inside = -1e3;
         float bestY = 0.0;
 
-        for (int i = 0; i < 64; i++) {
+        for (int i = 0; i < 96; i++) {
           if (i >= uCount) break;
           float fi = float(i);
           vec4 h = vec4(hash12(vec2(fi * 1.31, uSeed * 3.7)),

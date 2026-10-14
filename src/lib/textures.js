@@ -200,9 +200,9 @@ export function rustTexture(seed = 7) {
   const S = 256;
   const c = canvas(S);
   fillPixels(c, (u, v) => {
-    const n = tileFbm(u, v, 6, 5, seed);
-    const m = tileFbm(u, v, 20, 3, seed + 2);
-    const k = 0.6 + n * 0.6 + (m - 0.5) * 0.3;
+    const n = tileFbm(u, v, 3, 4, seed);
+    const m = tileFbm(u, v, 12, 3, seed + 2);
+    const k = 0.78 + (n - 0.5) * 0.45 + (m - 0.5) * 0.15;
     return [clamp(128 * k, 0, 255), clamp(90 * k, 0, 255), clamp(70 * k, 0, 255)];
   });
   return toTexture(c);
@@ -443,3 +443,128 @@ export function paperTexture(seed = 37) {
   return t;
 }
 
+
+/** A single leaf with a midrib (white, alpha) — tinted per instance. */
+export function leafTexture() {
+  const W = 128;
+  const H = 64;
+  const c = canvas(W, H);
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(6, H / 2);
+  ctx.quadraticCurveTo(W * 0.45, -4, W - 6, H / 2);
+  ctx.quadraticCurveTo(W * 0.45, H + 4, 6, H / 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(70,50,40,0.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(4, H / 2);
+  ctx.lineTo(W - 10, H / 2);
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < 5; i++) {
+    const x = (W * i) / 5.5;
+    ctx.beginPath();
+    ctx.moveTo(x, H / 2);
+    ctx.lineTo(x + 14, H / 2 - 16);
+    ctx.moveTo(x, H / 2);
+    ctx.lineTo(x + 14, H / 2 + 16);
+    ctx.stroke();
+  }
+  return toTexture(c, { repeat: false, aniso: 4 });
+}
+
+/** Distant forest canopy: packed tree crowns, lit on one side (tileable). */
+export function forestTexture(seed = 41, { lightDir = [0.7, -0.5] } = {}) {
+  const S = 1024;
+  const c = canvas(S);
+  const rnd = mulberry32(seed);
+  const ctx = fillPixels(c, (u, v) => {
+    const n = tileFbm(u, v, 6, 4, seed);
+    const k = 0.55 + n * 0.25;
+    return [60 * k, 92 * k, 96 * k];
+  });
+  const [lx, ly] = lightDir;
+  for (let i = 0; i < 2600; i++) {
+    const x = rnd() * S;
+    const y = rnd() * S;
+    const r = 7 + rnd() * 16;
+    const tone = 0.7 + rnd() * 0.5;
+    const green = rnd();
+    wrapDraw(S, x, y, r * 1.5, (px, py) => {
+      // dark rim / cast shade
+      ctx.fillStyle = `rgba(10,22,26,0.55)`;
+      ctx.beginPath();
+      ctx.arc(px - lx * r * 0.25, py - ly * r * 0.25, r * 1.05, 0, Math.PI * 2);
+      ctx.fill();
+      // crown body
+      ctx.fillStyle = hex(58 * tone + green * 14, 92 * tone + green * 22, 92 * tone);
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
+      // lit side
+      ctx.fillStyle = hex(98 * tone + green * 20, 140 * tone + green * 24, 120 * tone);
+      ctx.beginPath();
+      ctx.arc(px + lx * r * 0.32, py + ly * r * 0.32, r * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+  return toTexture(c, { aniso: 8 });
+}
+
+/**
+ * Painted tree crown on a transparent card: hundreds of small leaf clusters,
+ * lit from one side, darker inside and underneath (for distant woodland).
+ */
+export function treeCardTexture(seed = 51, { light = [0.8, -0.35], tall = 1.0 } = {}) {
+  const S = 256;
+  const c = canvas(S);
+  const ctx = c.getContext('2d');
+  const rnd = mulberry32(seed);
+  ctx.clearRect(0, 0, S, S);
+  // crown silhouette from a few lobes
+  const lobes = [];
+  const n = 5 + ((rnd() * 4) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = rnd() * Math.PI * 2;
+    const r = S * (0.12 + rnd() * 0.12);
+    lobes.push([S / 2 + Math.cos(a) * S * 0.16, S * (0.42 + (rnd() - 0.5) * 0.25 * tall) + Math.sin(a) * S * 0.12, r]);
+  }
+  lobes.push([S / 2, S * 0.48, S * 0.24]);
+  const inside = (x, y) => lobes.some(([lx, ly, r]) => (x - lx) ** 2 + (y - ly) ** 2 < r * r);
+  // trunk
+  ctx.strokeStyle = 'rgb(38,34,32)';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(S / 2, S);
+  ctx.lineTo(S / 2 + (rnd() - 0.5) * 10, S * 0.55);
+  ctx.stroke();
+  const [lx, ly] = light;
+  for (let i = 0; i < 1400; i++) {
+    const x = rnd() * S;
+    const y = rnd() * S;
+    if (!inside(x, y)) continue;
+    // facing the light?
+    let k = 0;
+    let cnt = 0;
+    for (const [cx, cy, r] of lobes) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < r) {
+        k += ((x - cx) * lx + (y - cy) * ly) / r;
+        cnt++;
+      }
+    }
+    k = cnt ? k / cnt : 0;
+    const lit = Math.max(0, Math.min(1, k * 1.3 + 0.15 + (rnd() - 0.5) * 0.5));
+    const low = Math.min(1, Math.max(0, (y - S * 0.35) / (S * 0.5)));
+    const g = 0.55 + lit * 0.7 - low * 0.25;
+    const r = 3 + rnd() * 7;
+    ctx.fillStyle = hex(28 * g + lit * 30, 52 * g + lit * 34, 40 * g + lit * 8);
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * (0.6 + rnd() * 0.3), rnd() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return toTexture(c, { repeat: false, aniso: 4 });
+}

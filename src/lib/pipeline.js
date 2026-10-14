@@ -52,6 +52,9 @@ export const DEFAULT_POST = {
   vignette: 0.25,
   vignetteColor: new THREE.Color(0.05, 0.08, 0.2),
   paper: 0.035,
+  paint: 0, // Kuwahara radius in px (0 = off)
+  colorEdge: 0, // strength of ink lines between colour patches
+  colorEdgeThreshold: 0.07,
 };
 
 /**
@@ -75,6 +78,8 @@ export class Pipeline {
     this.bloomRT = [rt(1, 1), rt(1, 1), rt(1, 1)];
     this.tmpRT = [rt(1, 1), rt(1, 1), rt(1, 1)];
     this.prevRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
+    this.paintRT = rt(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.paintRadius = 0;
 
     this.brightMat = new THREE.ShaderMaterial({
       uniforms: { tColor: { value: null }, uThreshold: { value: 0.8 } },
@@ -129,6 +134,50 @@ export class Pipeline {
       depthWrite: false,
     });
 
+    // Kuwahara filter: flattens surfaces into painted patches, keeps edges
+    this.paintMat = new THREE.ShaderMaterial({
+      defines: { RADIUS: 3 },
+      uniforms: { tColor: { value: null }, uTexel: { value: new THREE.Vector2() } },
+      vertexShader: VERT,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tColor;
+        uniform vec2 uTexel;
+        varying vec2 vUv;
+        void main() {
+          vec3 m0 = vec3(0.0), m1 = vec3(0.0), m2 = vec3(0.0), m3 = vec3(0.0);
+          vec3 s0 = vec3(0.0), s1 = vec3(0.0), s2 = vec3(0.0), s3 = vec3(0.0);
+          for (int j = -RADIUS; j <= RADIUS; j++) {
+            for (int i = -RADIUS; i <= RADIUS; i++) {
+              vec3 c = sqrt(max(texture2D(tColor, vUv + vec2(float(i), float(j)) * uTexel).rgb, vec3(0.0)));
+              vec3 cc = c * c;
+              if (i <= 0 && j <= 0) { m0 += c; s0 += cc; }
+              if (i >= 0 && j <= 0) { m1 += c; s1 += cc; }
+              if (i <= 0 && j >= 0) { m2 += c; s2 += cc; }
+              if (i >= 0 && j >= 0) { m3 += c; s3 += cc; }
+            }
+          }
+          float n = float((RADIUS + 1) * (RADIUS + 1));
+          m0 /= n; m1 /= n; m2 /= n; m3 /= n;
+          vec3 v0 = s0 / n - m0 * m0;
+          vec3 v1 = s1 / n - m1 * m1;
+          vec3 v2 = s2 / n - m2 * m2;
+          vec3 v3 = s3 / n - m3 * m3;
+          float a0 = v0.r + v0.g + v0.b;
+          float a1 = v1.r + v1.g + v1.b;
+          float a2 = v2.r + v2.g + v2.b;
+          float a3 = v3.r + v3.g + v3.b;
+          vec3 best = m0;
+          float bv = a0;
+          if (a1 < bv) { bv = a1; best = m1; }
+          if (a2 < bv) { bv = a2; best = m2; }
+          if (a3 < bv) { bv = a3; best = m3; }
+          gl_FragColor = vec4(best * best, texture2D(tColor, vUv).a);
+        }
+      `,
+      depthTest: false,
+      depthWrite: false,
+    });
+
     const p = DEFAULT_POST;
     this.compositeMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -157,6 +206,9 @@ export class Pipeline {
         uVignette: { value: p.vignette },
         uVignetteColor: { value: p.vignetteColor.clone() },
         uPaper: { value: p.paper },
+        uColorEdge: { value: 0 },
+        uColorEdgeTh: { value: p.colorEdgeThreshold },
+        uEdgeScale: { value: 1 },
         uTransition: { value: 1 },
         uTime: { value: 0 },
       },
@@ -167,6 +219,7 @@ export class Pipeline {
         uniform float uNear, uFar, uOutline, uLineFar, uLineThreshold, uCreaseThreshold;
         uniform vec3 uLineColor;
         uniform float uBloom, uExposure, uSaturation, uContrast, uVignette, uPaper, uTransition, uTime;
+        uniform float uColorEdge, uColorEdgeTh, uEdgeScale;
         uniform vec3 uLift, uGain, uVignetteColor;
         varying vec2 vUv;
         ${NOISE_GLSL}
@@ -180,9 +233,7 @@ export class Pipeline {
         vec3 neutral(vec3 color) {
           const float startCompression = 0.8 - 0.04;
           const float desaturation = 0.15;
-          float x = min(color.r, min(color.g, color.b));
-          float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
-          color -= offset;
+          // (the PBR-neutral toe is left out: it crushes painted shadows)
           float peak = max(color.r, max(color.g, color.b));
           if (peak < startCompression) return color;
           const float d = 1.0 - startCompression;
@@ -227,8 +278,30 @@ export class Pipeline {
         void main() {
           vec3 col = texture2D(tColor, vUv).rgb;
 
-          // ink lines
+          // ink lines from depth
           float edge = edgeAt(vUv) * uOutline;
+          // ink lines around colour patches (painted look)
+          if (uColorEdge > 0.0) {
+            vec2 o = uTexel * uEdgeScale;
+            vec3 W = vec3(0.2126, 0.7152, 0.0722);
+            float tl = sqrt(dot(texture2D(tColor, vUv + vec2(-o.x, o.y)).rgb, W));
+            float tc = sqrt(dot(texture2D(tColor, vUv + vec2(0.0, o.y)).rgb, W));
+            float tr = sqrt(dot(texture2D(tColor, vUv + vec2(o.x, o.y)).rgb, W));
+            float ml = sqrt(dot(texture2D(tColor, vUv + vec2(-o.x, 0.0)).rgb, W));
+            float mr = sqrt(dot(texture2D(tColor, vUv + vec2(o.x, 0.0)).rgb, W));
+            float bl = sqrt(dot(texture2D(tColor, vUv + vec2(-o.x, -o.y)).rgb, W));
+            float bc = sqrt(dot(texture2D(tColor, vUv + vec2(0.0, -o.y)).rgb, W));
+            float br = sqrt(dot(texture2D(tColor, vUv + vec2(o.x, -o.y)).rgb, W));
+            float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
+            float gy = (tl + 2.0 * tc + tr) - (bl + 2.0 * bc + br);
+            float g = sqrt(gx * gx + gy * gy);
+            float lum = sqrt(dot(col, W));
+            // only darken the darker side of a boundary, so lines stay thin
+            float dark = step(lum, (tl + tc + tr + ml + mr + bl + bc + br) / 8.0 + 0.002);
+            float ce = smoothstep(uColorEdgeTh, uColorEdgeTh * 2.2, g) * mix(0.35, 1.0, dark);
+            float w = texture2D(tColor, vUv).a;
+            edge = max(edge, ce * uColorEdge * clamp(w * 1.15, 0.0, 1.0));
+          }
           col = mix(col, col * uLineColor, edge);
 
           // bloom
@@ -285,7 +358,10 @@ export class Pipeline {
       this.tmpRT[i].setSize(Math.max(1, (hw / s) | 0), Math.max(1, (hh / s) | 0));
     }
     this.prevRT.setSize(w, h);
+    this.paintRT.setSize(w, h);
+    this.paintMat.uniforms.uTexel.value.set(1 / w, 1 / h);
     const u = this.compositeMat.uniforms;
+    u.uEdgeScale.value = Math.max(1, h / 1100);
     u.uTexel.value.set(1 / w, 1 / h);
     u.uResolution.value.set(w, h);
   }
@@ -307,6 +383,13 @@ export class Pipeline {
     u.uVignette.value = p.vignette;
     u.uVignetteColor.value.copy(p.vignetteColor);
     u.uPaper.value = p.paper;
+    u.uColorEdge.value = p.colorEdge;
+    u.uColorEdgeTh.value = p.colorEdgeThreshold;
+    this.paintRadius = p.paint;
+    if (p.paint > 0 && this.paintMat.defines.RADIUS !== p.paint) {
+      this.paintMat.defines.RADIUS = p.paint;
+      this.paintMat.needsUpdate = true;
+    }
     this.brightMat.uniforms.uThreshold.value = p.bloomThreshold;
   }
 
@@ -341,6 +424,12 @@ export class Pipeline {
 
     const u = this.compositeMat.uniforms;
     u.tColor.value = this.sceneRT.texture;
+    if (this.paintRadius > 0) {
+      this.paintMat.uniforms.tColor.value = this.sceneRT.texture;
+      r.setRenderTarget(this.paintRT);
+      this.quad.render(r, this.paintMat);
+      u.tColor.value = this.paintRT.texture;
+    }
     u.tDepth.value = this.sceneRT.depthTexture;
     u.tBloom0.value = this.bloomRT[0].texture;
     u.tBloom1.value = this.bloomRT[1].texture;
