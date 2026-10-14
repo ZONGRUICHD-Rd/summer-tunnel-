@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>夏之隧道 · Summer Tunnel</title>
+    <meta name="description" content="两个可切换的程序化 3D 场景：通往隧道的铁路，与海边的长椅。" />
+    <meta name="theme-color" content="#1b3f8f" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f6fc4'/%3E%3Cpath d='M14 50V30a18 18 0 0 1 36 0v20' fill='none' stroke='%23fff' stroke-width='6'/%3E%3Cpath d='M26 50l3-14h6l3 14' fill='%23fff'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three/three.module.min.js",
+          "three/addons/": "./vendor/three/addons/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <canvas id="view" aria-label="3D 场景"></canvas>
+
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-inner">
+        <div class="loader-title">夏之隧道</div>
+        <div class="loader-bar"><span id="loader-fill"></span></div>
+        <div id="loader-text" class="loader-text">正在生成场景…</div>
+      </div>
+    </div>
+
+    <header class="hud top">
+      <div class="brand">
+        <span class="brand-title" id="scene-title">夏之隧道</span>
+        <span class="brand-sub" id="scene-sub">The Tunnel to Summer</span>
+      </div>
+      <div class="tools">
+        <button id="btn-free" class="chip" type="button" aria-pressed="false" title="自由视角 (F)">自由视角</button>
+        <button id="btn-reset" class="chip" type="button" title="复位视角 (R)">复位</button>
+        <button id="btn-ui" class="chip icon" type="button" title="隐藏界面 (H)" aria-label="隐藏界面">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <nav class="hud bottom" aria-label="场景切换">
+      <button class="scene-tab" data-scene="tunnel" type="button">
+        <span class="tab-num">01</span>
+        <span class="tab-text"><b>夏之隧道</b><small>铁路 · 电线杆 · 隧道</small></span>
+      </button>
+      <button class="scene-tab" data-scene="seaside" type="button">
+        <span class="tab-num">02</span>
+        <span class="tab-text"><b>海边长椅</b><small>长椅 · 海鸥 · 夏日海</small></span>
+      </button>
+    </nav>
+
+    <div class="hint" id="hint">拖动环顾 · 滚轮 / 双指缩放 · 双击复位 · 按 1 / 2 切换场景</div>
+
+    <noscript><p class="nojs">需要启用 JavaScript 和 WebGL 2 才能查看 3D 场景。</p></noscript>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>
