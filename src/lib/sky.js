@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { NOISE_GLSL } from './glsl.js';
 import { shared } from './materials.js';
+import { PROJECTOR_GLSL } from './projector.js';
 
 // Everything in this module is drawn "at infinity": the vertex shader pins
 // depth to the far plane, so the sky never occludes or outlines geometry.
@@ -102,8 +103,10 @@ export function createSkyDome(o) {
     });
   }
 
+  if (o.projector) Object.assign(uniforms, o.projector.uniforms);
   const mat = new THREE.ShaderMaterial({
     uniforms,
+    defines: o.projector ? { USE_PROJECTOR: '' } : {},
     depthWrite: false,
     side: THREE.BackSide,
     fog: false,
@@ -140,6 +143,9 @@ export function createSkyDome(o) {
       uniform vec3 uPLit[${MAX_PATCHES}], uPShade[${MAX_PATCHES}], uPWarm[${MAX_PATCHES}];
       varying vec3 vDir;
       ${NOISE_GLSL}
+      #ifdef USE_PROJECTOR
+      ${PROJECTOR_GLSL}
+      #endif
 
       vec2 hash22(vec2 p) {
         vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
@@ -374,6 +380,10 @@ export function createSkyDome(o) {
             col = paintPatch(col, p, i);
           }
         }
+        #ifdef USE_PROJECTOR
+          vec4 painted = projectPainting(vec4(d, 0.0));
+          col = mix(col, painted.rgb, painted.a);
+        #endif
         gl_FragColor = vec4(col, uLineWeight);
       }
     `,
