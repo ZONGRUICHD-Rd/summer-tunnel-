@@ -24,7 +24,6 @@ const quality = QUALITY[params.get('q')] ?? (coarse || small ? QUALITY.medium : 
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#view');
-const backdrop = $('#backdrop');
 const loader = $('#loader');
 const loaderFill = $('#loader-fill');
 const loaderText = $('#loader-text');
@@ -67,30 +66,15 @@ let transition = 1;
 let pixelRatio = Math.min(window.devicePixelRatio || 1, quality.pixelRatio);
 
 // ------------------------------------------------------------------ sizing
-let lastSize = '';
 function resize() {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  // scenes built on a painting keep its proportions on wide screens; a blurred
-  // copy of the painting fills the sides (free view always uses the full screen)
-  const fit = !freeMode && current?.fit;
-  let w = vw;
-  if (fit && vw / vh > fit.aspect * 1.08) w = Math.round(vh * fit.aspect);
-  canvas.style.width = `${w}px`;
-  canvas.style.left = `${Math.round((vw - w) / 2)}px`;
-  document.body.classList.toggle('pillar', w < vw);
-  backdrop.style.backgroundImage = fit ? `url(${fit.backdrop})` : 'none';
-  const h = vh;
-  const key = `${w}x${h}@${pixelRatio}`;
-  if (key !== lastSize) {
-    lastSize = key;
-    renderer.setPixelRatio(pixelRatio);
-    renderer.setSize(w, h, false);
-    const pw = Math.floor(w * pixelRatio);
-    const ph = Math.floor(h * pixelRatio);
-    pipeline.setSize(pw, ph);
-    for (const s of Object.values(scenes)) for (const wset of s.wires ?? []) wset.setResolution(pw, ph);
-  }
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(w, h, false);
+  const pw = Math.floor(w * pixelRatio);
+  const ph = Math.floor(h * pixelRatio);
+  pipeline.setSize(pw, ph);
+  for (const s of Object.values(scenes)) for (const wset of s.wires ?? []) wset.setResolution(pw, ph);
   camera.aspect = w / h;
   if (current) {
     base = current.frame(camera.aspect);
@@ -159,7 +143,6 @@ function switchTo(id, { instant = false } = {}) {
   look.snap();
   applyBaseView();
   updateUI(id);
-  resize();
   if (location.hash.slice(1) !== id) history.replaceState(null, '', `#${id}`);
 }
 
@@ -170,10 +153,7 @@ function setFree(on, { instant = false } = {}) {
   look.enabled = !on;
   orbit.enabled = on;
   if (on) {
-    // free view shows the plain 3D model, with its own look
-    current?.onFree?.(true);
-    if (current?.postFree) pipeline.applyPost(current.postFree);
-    resize();
+    // stay near eye level: from far away or overhead the scene reads as a toy
     const o = current.orbit;
     orbit.target.copy(o.target);
     orbit.minDistance = o.min;
@@ -192,15 +172,7 @@ function setFree(on, { instant = false } = {}) {
     look.snap();
   } else {
     returning = null;
-    leaveFree();
   }
-}
-
-// back at the composed view: restore the scene's normal look
-function leaveFree() {
-  current?.onFree?.(false);
-  if (current) pipeline.applyPost(current.post);
-  resize();
 }
 
 // --------------------------------------------------------------------- UI
@@ -274,10 +246,7 @@ function tick() {
       camera.fov = THREE.MathUtils.lerp(returning.fov, base.fov, k);
       camera.updateProjectionMatrix();
     }
-    if (returning.t >= 1) {
-      returning = null;
-      leaveFree();
-    }
+    if (returning.t >= 1) returning = null;
   } else {
     look.update(dt);
     applyBaseView();

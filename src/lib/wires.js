@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { PROJECTOR_GLSL } from './projector.js';
 
 /**
  * Overhead wires rendered as camera-facing ribbons. Close up they keep their
@@ -7,7 +6,7 @@ import { PROJECTOR_GLSL } from './projector.js';
  * by coverage instead of breaking into aliased dashes.
  */
 export class WireSet {
-  constructor({ color = 0x262a33, minPx = 0.65, opacity = 1, projector = null } = {}) {
+  constructor({ color = 0x262a33, minPx = 0.65, opacity = 1 } = {}) {
     this.segments = [];
     this.material = new THREE.ShaderMaterial({
       uniforms: THREE.UniformsUtils.merge([
@@ -17,10 +16,8 @@ export class WireSet {
           uMinPx: { value: minPx },
           uResolution: { value: new THREE.Vector2(1, 1) },
           uOpacity: { value: opacity },
-          uHideInPainting: { value: 0 },
         },
       ]),
-      defines: projector ? { USE_PROJECTOR: '' } : {},
       transparent: true,
       depthWrite: false,
       fog: true,
@@ -33,7 +30,6 @@ export class WireSet {
         uniform vec2 uResolution;
         varying float vCover;
         varying float vSide;
-        varying vec3 vWorld;
         #include <fog_pars_vertex>
         void main() {
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
@@ -46,7 +42,6 @@ export class WireSet {
           float w = max(aRadius, minW);
           vCover = clamp(aRadius / minW, 0.0, 1.0);
           vSide = aSide;
-          vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
           mvPosition.xyz += s * aSide * w;
           gl_Position = projectionMatrix * mvPosition;
           #include <fog_vertex>
@@ -55,32 +50,17 @@ export class WireSet {
       fragmentShader: /* glsl */ `
         uniform vec3 uColor;
         uniform float uOpacity;
-        uniform float uHideInPainting;
         varying float vCover;
         varying float vSide;
-        varying vec3 vWorld;
         #include <fog_pars_fragment>
-        #ifdef USE_PROJECTOR
-        ${PROJECTOR_GLSL}
-        #endif
         void main() {
           float edge = 1.0 - smoothstep(0.55, 1.0, abs(vSide));
           float a = mix(edge, 1.0, 0.35) * mix(0.25, 1.0, sqrt(vCover)) * uOpacity;
-          #ifdef USE_PROJECTOR
-            // the painting already has these wires drawn in
-            a *= 1.0 - projectPainting(vec4(vWorld, 1.0)).a * uHideInPainting;
-          #endif
           gl_FragColor = vec4(uColor, a);
           #include <fog_fragment>
         }
       `,
     });
-    if (projector) Object.assign(this.material.uniforms, projector.uniforms);
-  }
-
-  /** Hide wire pixels already present in the projected painting. */
-  setHideInPainting(on) {
-    this.material.uniforms.uHideInPainting.value = on ? 1 : 0;
   }
 
   /** Add a polyline (array of Vector3). */

@@ -6,7 +6,6 @@ import { WireSet } from '../lib/wires.js';
 import { profileStrip, rod, box, grassCard, fillInstances, mergeGeometries } from '../lib/geom.js';
 import { mulberry32, fbm2, smoothstep, lerp, clamp } from '../lib/noise.js';
 import * as TX from '../lib/textures.js';
-import { Projector, addProjector } from '../lib/projector.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
@@ -79,9 +78,7 @@ function groundHeight(X, d) {
   return h;
 }
 
-export function createTunnelScene({ quality, renderer }) {
-  // the painting itself, projected from the camera it was painted from
-  const projector = new Projector({ width: REF.w, height: REF.h, lens: LENS, eye: EYE });
+export function createTunnelScene({ quality }) {
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x2f527f, 0.00045);
   const rnd = mulberry32(7);
@@ -130,7 +127,6 @@ export function createTunnelScene({ quality, renderer }) {
       lens: LENS,
       lineWeight: 0.2,
       map: SKY_MAP,
-      projector,
     })
   );
 
@@ -485,8 +481,8 @@ export function createTunnelScene({ quality, renderer }) {
   }
 
   // ------------------------------------------------------------ catenary
-  const wires = new WireSet({ color: 0x141a26, minPx: 0.6, projector });
-  const fineWires = new WireSet({ color: 0x1c2230, minPx: 0.45, projector });
+  const wires = new WireSet({ color: 0x141a26, minPx: 0.6 });
+  const fineWires = new WireSet({ color: 0x1c2230, minPx: 0.45 });
   const steel = [];
   const dark = [];
   const ins = [];
@@ -928,48 +924,18 @@ export function createTunnelScene({ quality, renderer }) {
     scene.add(tm);
   }
 
-  // every surface shows the painting where the painting can see it
-  const patched = new Set();
-  scene.traverse((o) => {
-    if (!o.isMesh) return;
-    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-      if (patched.has(m) || !(m.isMeshToonMaterial || m.isMeshBasicMaterial)) continue;
-      patched.add(m);
-      addProjector(m, projector);
-    }
-  });
-  projector.renderDepth(renderer, scene);
-  projector.load('assets/tunnel-painting.jpg');
-  for (const w of [wires, fineWires]) w.setHideInPainting(true);
-
   return {
     id: 'tunnel',
     scene,
     wires: [wires, fineWires],
     post: {
-      outline: 0,
-      bloom: 0,
-      exposure: 1.0,
-      saturation: 1.0,
-      contrast: 1.0,
-      lift: new THREE.Color(0, 0, 0),
-      gain: new THREE.Color(1, 1, 1),
-      vignette: 0,
-      paper: 0,
-      paint: 0,
-      colorEdge: 0,
-      toneMap: false,
-    },
-    fit: { aspect: REF.w / REF.h, backdrop: 'assets/tunnel-painting.jpg' },
-    // free view: the painting only holds from its own viewpoint, so away
-    // from it the scene shows the 3D model with a painterly post instead
-    postFree: {
       outline: 0.9,
       lineColor: new THREE.Color(0.1, 0.1, 0.18),
       lineFar: 120,
       creaseThreshold: 0.35,
       bloom: 0.18,
       bloomThreshold: 1.0,
+      exposure: 1.0,
       saturation: 1.05,
       contrast: 1.0,
       lift: new THREE.Color(0.0, 0.01, 0.03),
@@ -980,11 +946,6 @@ export function createTunnelScene({ quality, renderer }) {
       paint: quality.paint,
       colorEdge: 0.9,
       colorEdgeThreshold: 0.055,
-      toneMap: true,
-    },
-    onFree(on) {
-      projector.enabled = !on;
-      for (const w of [wires, fineWires]) w.setHideInPainting(!on);
     },
     frame(aspect) {
       const refAspect = REF.w / REF.h;

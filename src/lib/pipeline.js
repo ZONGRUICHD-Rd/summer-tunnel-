@@ -55,7 +55,6 @@ export const DEFAULT_POST = {
   paint: 0, // Kuwahara radius in px (0 = off)
   colorEdge: 0, // strength of ink lines between colour patches
   colorEdgeThreshold: 0.07,
-  toneMap: true,
 };
 
 /**
@@ -208,7 +207,6 @@ export class Pipeline {
         uVignetteColor: { value: p.vignetteColor.clone() },
         uPaper: { value: p.paper },
         uColorEdge: { value: 0 },
-        uToneMap: { value: 1 },
         uColorEdgeTh: { value: p.colorEdgeThreshold },
         uEdgeScale: { value: 1 },
         uTransition: { value: 1 },
@@ -221,7 +219,7 @@ export class Pipeline {
         uniform float uNear, uFar, uOutline, uLineFar, uLineThreshold, uCreaseThreshold;
         uniform vec3 uLineColor;
         uniform float uBloom, uExposure, uSaturation, uContrast, uVignette, uPaper, uTransition, uTime;
-        uniform float uColorEdge, uColorEdgeTh, uEdgeScale, uToneMap;
+        uniform float uColorEdge, uColorEdgeTh, uEdgeScale;
         uniform vec3 uLift, uGain, uVignetteColor;
         varying vec2 vUv;
         ${NOISE_GLSL}
@@ -311,7 +309,7 @@ export class Pipeline {
           col += bloom * uBloom;
 
           col *= uExposure;
-          col = uToneMap > 0.5 ? neutral(col) : min(col, vec3(1.0));
+          col = neutral(col);
           col = toSRGB(col);
 
           // grading in display space
@@ -386,7 +384,6 @@ export class Pipeline {
     u.uVignetteColor.value.copy(p.vignetteColor);
     u.uPaper.value = p.paper;
     u.uColorEdge.value = p.colorEdge;
-    u.uToneMap.value = p.toneMap ? 1 : 0;
     u.uColorEdgeTh.value = p.colorEdgeThreshold;
     this.paintRadius = p.paint;
     if (p.paint > 0 && this.paintMat.defines.RADIUS !== p.paint) {
