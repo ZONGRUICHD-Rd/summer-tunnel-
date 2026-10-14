@@ -166,20 +166,23 @@ function switchTo(id, { instant = false } = {}) {
 function setFree(on, { instant = false } = {}) {
   if (on === freeMode) return;
   freeMode = on;
-  current?.onFree?.(on);
-  resize();
   $('#btn-free').setAttribute('aria-pressed', String(on));
   look.enabled = !on;
   orbit.enabled = on;
   if (on) {
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    const t = current.orbit.target.clone();
-    const d = camera.position.distanceTo(t);
-    orbit.target.copy(camera.position).addScaledVector(dir, d);
-    orbit.minDistance = current.orbit.min;
-    orbit.maxDistance = current.orbit.max;
-    orbit.maxPolarAngle = Math.PI * 0.53;
+    // free view shows the plain 3D model, with its own look
+    current?.onFree?.(true);
+    if (current?.postFree) pipeline.applyPost(current.postFree);
+    resize();
+    const o = current.orbit;
+    orbit.target.copy(o.target);
+    orbit.minDistance = o.min;
+    orbit.maxDistance = o.max;
+    orbit.minPolarAngle = o.minPolar ?? 0;
+    orbit.maxPolarAngle = o.maxPolar ?? Math.PI * 0.53;
+    orbit.minAzimuthAngle = o.minAzimuth ?? -Infinity;
+    orbit.maxAzimuthAngle = o.maxAzimuth ?? Infinity;
+    orbit.enablePan = false;
     applyProjection(1);
     orbit.update();
     returning = null;
@@ -189,7 +192,15 @@ function setFree(on, { instant = false } = {}) {
     look.snap();
   } else {
     returning = null;
+    leaveFree();
   }
+}
+
+// back at the composed view: restore the scene's normal look
+function leaveFree() {
+  current?.onFree?.(false);
+  if (current) pipeline.applyPost(current.post);
+  resize();
 }
 
 // --------------------------------------------------------------------- UI
@@ -263,7 +274,10 @@ function tick() {
       camera.fov = THREE.MathUtils.lerp(returning.fov, base.fov, k);
       camera.updateProjectionMatrix();
     }
-    if (returning.t >= 1) returning = null;
+    if (returning.t >= 1) {
+      returning = null;
+      leaveFree();
+    }
   } else {
     look.update(dt);
     applyBaseView();

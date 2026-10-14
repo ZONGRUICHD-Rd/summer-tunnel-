@@ -264,10 +264,10 @@ export function createTunnelScene({ quality, renderer }) {
     const cBank = new THREE.Color(0x24382e);
     const cUpper = new THREE.Color(0x6a6450);
     for (let j = 0; j <= ND; j++) {
-      const d = -8 + Math.pow(j / ND, 1.6) * 110;
+      const d = -60 + Math.pow(j / ND, 1.35) * 162;
       for (let i = 0; i <= NX; i++) {
         const u = (i / NX) * 2 - 1;
-        const X = TRACK_X + Math.sign(u) * Math.pow(Math.abs(u), 1.8) * 120;
+        const X = TRACK_X + Math.sign(u) * Math.pow(Math.abs(u), 1.8) * 320;
         const h = groundHeight(X, d);
         pos.push(X, h, -d);
         uv.push(X / 3, -d / 3);
@@ -961,8 +961,29 @@ export function createTunnelScene({ quality, renderer }) {
       toneMap: false,
     },
     fit: { aspect: REF.w / REF.h, backdrop: 'assets/tunnel-painting.jpg' },
-    // in free view the painting can't hide the 3D wires any more
+    // free view: the painting only holds from its own viewpoint, so away
+    // from it the scene shows the 3D model with a painterly post instead
+    postFree: {
+      outline: 0.9,
+      lineColor: new THREE.Color(0.1, 0.1, 0.18),
+      lineFar: 120,
+      creaseThreshold: 0.35,
+      bloom: 0.18,
+      bloomThreshold: 1.0,
+      saturation: 1.05,
+      contrast: 1.0,
+      lift: new THREE.Color(0.0, 0.01, 0.03),
+      gain: new THREE.Color(1.03, 1.0, 0.98),
+      vignette: 0.22,
+      vignetteColor: new THREE.Color(0.04, 0.06, 0.16),
+      paper: 0.025,
+      paint: quality.paint,
+      colorEdge: 0.9,
+      colorEdgeThreshold: 0.055,
+      toneMap: true,
+    },
     onFree(on) {
+      projector.enabled = !on;
       for (const w of [wires, fineWires]) w.setHideInPainting(!on);
     },
     frame(aspect) {
@@ -984,7 +1005,7 @@ export function createTunnelScene({ quality, renderer }) {
       }
       return { position: V(0, EYE, 0), yaw: 0, pitch: 0, near: 0.05, fov: 60, lens: LENS, window: { x0, x1: x0 + W, y0, y1: y0 + H } };
     },
-    orbit: { target: V(0, 2, -20), min: 2, max: 140 },
+    orbit: { target: V(0, 2.2, -18), min: 4, max: 22, minPolar: Math.PI * 0.42, maxPolar: Math.PI * 0.51, minAzimuth: -1.1, maxAzimuth: 1.1 },
     update() {},
   };
 }

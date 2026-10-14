@@ -540,7 +540,7 @@ export function createSeasideScene({ quality, renderer }) {
         fov: lerp(64, 42, t),
       };
     },
-    orbit: { target: V(0, 0.6, 0), min: 1.5, max: 25 },
+    orbit: { target: V(0, 0.6, 0), min: 2, max: 12, minPolar: Math.PI * 0.36, maxPolar: Math.PI * 0.5, minAzimuth: -1.3, maxAzimuth: 1.3 },
     update(t) {
       updateGulls(t);
       canopy.children.forEach((m, i) => {

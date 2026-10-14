@@ -30,12 +30,22 @@ export class Projector {
     };
   }
 
+  /** Show or hide the painting (free view uses the plain 3D model). */
+  set enabled(on) {
+    this._enabled = on;
+    this.uniforms.uProjAmount.value = on && this.uniforms.uProjMap.value ? 1 : 0;
+  }
+
+  get enabled() {
+    return this._enabled !== false;
+  }
+
   load(url) {
     new THREE.TextureLoader().load(url, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 8;
       this.uniforms.uProjMap.value = tex;
-      this.uniforms.uProjAmount.value = 1;
+      this.uniforms.uProjAmount.value = this.enabled ? 1 : 0;
     });
   }
 
